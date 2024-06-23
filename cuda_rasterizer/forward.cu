@@ -3,7 +3,7 @@
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use 
+ * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
  * For inquiries contact  george.drettakis@inria.fr
@@ -19,8 +19,8 @@ namespace cg = cooperative_groups;
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
 {
-	// The implementation is loosely based on code for 
-	// "Differentiable Point-Based Radiance Fields for 
+	// The implementation is loosely based on code for
+	// "Differentiable Point-Based Radiance Fields for
 	// Efficient View Synthesis" by Zhang et al. (2022)
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir = pos - campos;
@@ -74,7 +74,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
 {
 	// The following models the steps outlined by equations 29
-	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
+	// and 31 in "EWA Splatting" (Zwicker et al., 2002).
 	// Additionally considers aspect / scaling of viewport.
 	// Transposes used to account for row-/column-major conventions.
 	float3 t = transformPoint4x3(mean, viewmatrix);
@@ -101,7 +101,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	glm::mat3 Vrk = glm::mat3(
 		cov3D[0], cov3D[1], cov3D[2],
 		cov3D[1], cov3D[3], cov3D[4],
-		cov3D[2], cov3D[4], cov3D[5]);
+		cov3D[2], cov3D[4], cov3D[5]); // the covariance matrices of gaussians are symmetric
 
 	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
@@ -179,6 +179,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
+	// cg stands for Cooperative Groups, idx is unique to the thread across the whole grid
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
@@ -200,7 +201,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
-	// from scaling and rotation parameters. 
+	// from scaling and rotation parameters.
 	const float* cov3D;
 	if (cov3D_precomp != nullptr)
 	{
@@ -225,7 +226,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Compute extent in screen space (by finding eigenvalues of
 	// 2D covariance matrix). Use extent to compute a bounding rectangle
 	// of screen-space tiles that this Gaussian overlaps with. Quit if
-	// rectangle covers 0 tiles. 
+	// rectangle covers 0 tiles.
 	float mid = 0.5f * (cov.x + cov.z);
 	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
 	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
@@ -256,8 +257,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 }
 
 // Main rasterization method. Collaboratively works on one tile per
-// block, each thread treats one pixel. Alternates between fetching 
+// block, each thread treats one pixel. Alternates between fetching
 // and rasterizing data.
+// Syntax for __launch_bounds__ is `__launch_bounds__( maxThreadsPerBlock, minBlocksPerMultiprocessor )`
 template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
@@ -270,7 +272,10 @@ renderCUDA(
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
-	float* __restrict__ out_color)
+	float* __restrict__ out_color,
+	float* __restrict__ out_entropy,
+	int* __restrict__ count_pixels
+	)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -278,7 +283,7 @@ renderCUDA(
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
 	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
-	uint32_t pix_id = W * pix.y + pix.x;
+	uint32_t pix_id = W * pix.y + pix.x; // id of the pixel this thread works with in this block
 	float2 pixf = { (float)pix.x, (float)pix.y };
 
 	// Check if this thread is associated with a valid pixel or outside.
@@ -302,7 +307,17 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 
+	float entropy = { 0 };
+	float norm_entropy = { 0 };
+	int count = { 0 }; // TODO: is this counting correct?,  per pixel count of gaussians that influenced the pixel
+
 	// Iterate over batches until all done or range is complete
+	// We have rounds (i) where in the beginning all threads collaborate to
+	// load the relevant points into shared memory (each thread only loads
+	// in one point). Once all threads are done loading variables into memory,
+	// the second loop (j) that iterates over the loaded gaussians kicks in.
+	// Here each thread treats the same pixel it was assigned when the thread was
+	// created.
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
@@ -327,7 +342,7 @@ renderCUDA(
 			// Keep track of current position in range
 			contributor++;
 
-			// Resample using conic matrix (cf. "Surface 
+			// Resample using conic matrix (cf. "Surface
 			// Splatting" by Zwicker et al., 2001)
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
@@ -339,10 +354,11 @@ renderCUDA(
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
-			// Avoid numerical instabilities (see paper appendix). 
+			// Avoid numerical instabilities (see paper appendix).
 			float alpha = min(0.99f, con_o.w * exp(power));
-			if (alpha < 1.0f / 255.0f)
+			if (alpha < 1.0f / 255.0f) {
 				continue;
+			}
 			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
 			{
@@ -351,16 +367,27 @@ renderCUDA(
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
+			for (int ch = 0; ch < CHANNELS; ch++){
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			}
 
-			T = test_T;
+			// Ignore very small p = alpha*T values to ensure numerical stability, avoid log(0)
+			if ( (alpha * T) < 0.00001f) {
+				entropy += 0.0f;
+			} else {
+				entropy += - alpha * T * log(alpha * T);
+			}
+
+			count += 1;
+
+			T = test_T; // this basically increments the T to the next gaussian, it means that at the end we have the (1 - last_alpha) multiplied as well
 
 			// Keep track of last range entry to update this
 			// pixel.
 			last_contributor = contributor;
 		}
 	}
+
 
 	// All threads that treat valid pixel write out their final
 	// rendering data to the frame and auxiliary buffers.
@@ -369,7 +396,35 @@ renderCUDA(
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
-			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch]; // the final T is used as the factor for the background color, it is after the last gaussian
+
+		count_pixels[pix_id] = count; // Need to provide as context to backward pass
+
+		float count_f = __int2float_rd(count);
+
+		// Need to normalize the entropy once we are done
+		if (count == 0) {
+			norm_entropy = 0.0f;
+		} else if (count == 1) {
+			norm_entropy = 0.0f;
+		} else {
+			norm_entropy = entropy / log(count_f);
+		}
+
+		out_entropy[pix_id] = norm_entropy;
+
+		// // Print information for debugging
+		// if (pix_id == 10){
+		// 	printf("=====FORWARD=====\npix_id: %d\ncount_f %e\ncount: %d\nentropy: %e\nnorm_entropy: %e\n", pix_id, count_f, count, entropy, norm_entropy);
+		// }
+
+		// if (pix_id == 10){
+		// 	printf("entropy: %f\n", entropy);
+		// 	printf("count: %d\n", count);
+		// }
+		// if (pix_id < 4000){
+		// printf("====FORWARD====\n Pixel id %i is inside, saved values to counts: %i, count_f: %e, count: %i\n", pix_id, count_pixels[pix_id], count_f, count);
+		// }
 	}
 }
 
@@ -384,7 +439,9 @@ void FORWARD::render(
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
-	float* out_color)
+	float* out_color,
+	float* out_entropy,
+	int* count_pixels)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -396,7 +453,12 @@ void FORWARD::render(
 		final_T,
 		n_contrib,
 		bg_color,
-		out_color);
+		out_color,
+		out_entropy,
+		count_pixels);
+		cudaDeviceSynchronize();
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess){printf("ouch... CUDA errors in FORWARD: %s\n", cudaGetErrorString(err));}
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -436,7 +498,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		clamped,
 		cov3D_precomp,
 		colors_precomp,
-		viewmatrix, 
+		viewmatrix,
 		projmatrix,
 		cam_pos,
 		W, H,

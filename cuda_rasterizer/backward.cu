@@ -3,7 +3,7 @@
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use 
+ * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
  * For inquiries contact  george.drettakis@inria.fr
@@ -132,14 +132,14 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 	// Account for normalization of direction
 	float3 dL_dmean = dnormvdv(float3{ dir_orig.x, dir_orig.y, dir_orig.z }, float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
 
-	// Gradients of loss w.r.t. Gaussian means, but only the portion 
+	// Gradients of loss w.r.t. Gaussian means, but only the portion
 	// that is caused because the mean affects the view-dependent color.
 	// Additional mean gradient is accumulated in below methods.
 	dL_dmeans[idx] += glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
 }
 
 // Backward version of INVERSE 2D covariance matrix computation
-// (due to length launched as separate kernel before other 
+// (due to length launched as separate kernel before other
 // backward steps contained in preprocess)
 __global__ void computeCov2DCUDA(int P,
 	const float3* means,
@@ -159,19 +159,19 @@ __global__ void computeCov2DCUDA(int P,
 	// Reading location of 3D covariance for this Gaussian
 	const float* cov3D = cov3Ds + 6 * idx;
 
-	// Fetch gradients, recompute 2D covariance and relevant 
+	// Fetch gradients, recompute 2D covariance and relevant
 	// intermediate forward results needed in the backward.
 	float3 mean = means[idx];
 	float3 dL_dconic = { dL_dconics[4 * idx], dL_dconics[4 * idx + 1], dL_dconics[4 * idx + 3] };
 	float3 t = transformPoint4x3(mean, view_matrix);
-	
+
 	const float limx = 1.3f * tan_fovx;
 	const float limy = 1.3f * tan_fovy;
 	const float txtz = t.x / t.z;
 	const float tytz = t.y / t.z;
 	t.x = min(limx, max(-limx, txtz)) * t.z;
 	t.y = min(limy, max(-limy, tytz)) * t.z;
-	
+
 	const float x_grad_mul = txtz < -limx || txtz > limx ? 0 : 1;
 	const float y_grad_mul = tytz < -limy || tytz > limy ? 0 : 1;
 
@@ -211,14 +211,14 @@ __global__ void computeCov2DCUDA(int P,
 		dL_dc = denom2inv * (-a * a * dL_dconic.z + 2 * a * b * dL_dconic.y + (denom - a * c) * dL_dconic.x);
 		dL_db = denom2inv * 2 * (b * c * dL_dconic.x - (denom + 2 * b * b) * dL_dconic.y + a * b * dL_dconic.z);
 
-		// Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry, 
+		// Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry,
 		// given gradients w.r.t. 2D covariance matrix (diagonal).
 		// cov2D = transpose(T) * transpose(Vrk) * T;
 		dL_dcov[6 * idx + 0] = (T[0][0] * T[0][0] * dL_da + T[0][0] * T[1][0] * dL_db + T[1][0] * T[1][0] * dL_dc);
 		dL_dcov[6 * idx + 3] = (T[0][1] * T[0][1] * dL_da + T[0][1] * T[1][1] * dL_db + T[1][1] * T[1][1] * dL_dc);
 		dL_dcov[6 * idx + 5] = (T[0][2] * T[0][2] * dL_da + T[0][2] * T[1][2] * dL_db + T[1][2] * T[1][2] * dL_dc);
 
-		// Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry, 
+		// Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry,
 		// given gradients w.r.t. 2D covariance matrix (off-diagonal).
 		// Off-diagonal elements appear twice --> double the gradient.
 		// cov2D = transpose(T) * transpose(Vrk) * T;
@@ -267,14 +267,14 @@ __global__ void computeCov2DCUDA(int P,
 	// t = transformPoint4x3(mean, view_matrix);
 	float3 dL_dmean = transformVec4x3Transpose({ dL_dtx, dL_dty, dL_dtz }, view_matrix);
 
-	// Gradients of loss w.r.t. Gaussian means, but only the portion 
+	// Gradients of loss w.r.t. Gaussian means, but only the portion
 	// that is caused because the mean affects the covariance matrix.
 	// Additional mean gradient is accumulated in BACKWARD::preprocess.
 	dL_dmeans[idx] = dL_dmean;
 }
 
-// Backward pass for the conversion of scale and rotation to a 
-// 3D covariance matrix for each Gaussian. 
+// Backward pass for the conversion of scale and rotation to a
+// 3D covariance matrix for each Gaussian.
 __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const glm::vec4 rot, const float* dL_dcov3Ds, glm::vec3* dL_dscales, glm::vec4* dL_drots)
 {
 	// Recompute (intermediate) results for the 3D covariance computation.
@@ -408,7 +408,9 @@ renderCUDA(
 	const float* __restrict__ colors,
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
+	const int* __restrict__ count_pixels,
 	const float* __restrict__ dL_dpixels,
+	const float* __restrict__ dL_dentropy,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
@@ -417,27 +419,28 @@ renderCUDA(
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y }; // minimum and maximum pixel indices for the given block
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
-	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
-	const uint32_t pix_id = W * pix.y + pix.x;
+	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y }; // the 2 dimensional vector being worked on by this thread
+	const uint32_t pix_id = W * pix.y + pix.x; // the id of the of the pixel being worked on
 	const float2 pixf = { (float)pix.x, (float)pix.y };
 
 	const bool inside = pix.x < W&& pix.y < H;
 	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 
-	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE); // TODO what exactly is the range variable, what is ranges?
 
 	bool done = !inside;
-	int toDo = range.y - range.x;
+	int toDo = range.y - range.x; // TODO what is toDo?
 
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 
+
 	// In the forward, we stored the final value for T, the
-	// product of all (1 - alpha) factors. 
+	// product of all (1 - alpha) factors.
 	const float T_final = inside ? final_Ts[pix_id] : 0;
 	float T = T_final;
 
@@ -446,16 +449,30 @@ renderCUDA(
 	uint32_t contributor = toDo;
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
-	float accum_rec[C] = { 0 };
-	float dL_dpixel[C];
-	if (inside)
-		for (int i = 0; i < C; i++)
-			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+	float accum_rec[C] = { 0 }; // Used to compute the gradients of the T terms in the weighted sums iteratively
+	float accum_rec_entropy = { 0 }; //added
+	float dL_dpixel[C]; // Float array with three elements, this is for the specific pixel this thread is working on
+	float dL_dentropy_pixel = { 0 }; // added
+	int count = 0; // Gaussian counts are saved as ints
+	float count_f = 0.0f; // To use logarithm for normalized entropy we need float values
+	if (inside){
+		for (int i = 0; i < C; i++){
+			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id]; // dL_dpixels is the gradient array containing all the channel and values together, it is the input to the backward function, we only want the gradient wrt one pixel
+		}
+
+		dL_dentropy_pixel = dL_dentropy[pix_id]; // added
+		count =  count_pixels[pix_id]; // added
+		count_f = __int2float_rd(count); //added
+
+		// if (pix_id == 2813){
+		// 	printf("====BACKWARD====\n Pixel id %i is inside, added values dL_dentropy_pixel: %e, dL_dpixel[0]: %e, dL_dpixel[1]: %e, dL_dpixel[2]: %e, count: %i\n", pix_id, dL_dentropy_pixel, dL_dpixel[0], dL_dpixel[1], dL_dpixel[2], count);
+		// }
+	}
 
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
 
-	// Gradient of pixel coordinate w.r.t. normalized 
+	// Gradient of pixel coordinate w.r.t. normalized
 	// screen-space viewport corrdinates (-1 to 1)
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
@@ -469,7 +486,7 @@ renderCUDA(
 		const int progress = i * BLOCK_SIZE + block.thread_rank();
 		if (range.x + progress < range.y)
 		{
-			const int coll_id = point_list[range.y - progress - 1];
+			const int coll_id = point_list[range.y - progress - 1]; // coll_id is the reverse compared to FORWARD::renderCUDA()
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -483,59 +500,98 @@ renderCUDA(
 		{
 			// Keep track of current Gaussian ID. Skip, if this one
 			// is behind the last contributor for this pixel.
+			// in FORWARD::renderCUDA() we were incrementing contributor up, now we are going backwards
 			contributor--;
 			if (contributor >= last_contributor)
 				continue;
 
-			// Compute blending values, as before.
-			const float2 xy = collected_xy[j];
+			// Compute blending values, as before but now in reverse order of gaussians.
+			const float2 xy = collected_xy[j]; // projected 2D mean of the gaussian (probably) TODO double check
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
-			const float4 con_o = collected_conic_opacity[j];
+			const float4 con_o = collected_conic_opacity[j]; // conic_opacity is a 4 dimensional float vector, last element is the opacity, first three elements are the components of the inverse covariance matrix of the 2D gaussian (conic matrix), we only need 3 because Cov2D is a 2x2 symmetric matrix
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f)
 				continue;
 
-			const float G = exp(power);
-			const float alpha = min(0.99f, con_o.w * G);
+			const float G = exp(power); // Gaussian evaluated without the normalization factor, assuming the alphas take care of that during optimization
+			const float alpha = min(0.99f, con_o.w * G); // con_o.w is the last element of conic_opacity, it is the learned opacity per gaussian
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
-			T = T / (1.f - alpha);
+			T = T / (1.f - alpha); // reversing the T value, it was the sequential multiplication, now we go in reverse order
 			const float dchannel_dcolor = alpha * T;
 
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
-			float dL_dalpha = 0.0f;
-			const int global_id = collected_id[j];
+			float dL_dalpha = 0.0f; // this gets reset per-gaussian (i.e. it will be zero again for the next iteration of the inner loop), in the beginning this is the gradient of the final loss wrt the last alpha in the ordering (since we iterate in reverse)
+			const int global_id = collected_id[j]; // id of the current gaussian from the point_list
 			for (int ch = 0; ch < C; ch++)
 			{
-				const float c = collected_colors[ch * BLOCK_SIZE + j];
+				const float c = collected_colors[ch * BLOCK_SIZE + j]; // the color of this thread's pixel for the corresponding channel of the current gaussian
 				// Update last color (to be used in the next iteration)
-				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch]; // last_alpha, last_color and accum_rec initialized with 0 for each thread (pixel)
 				last_color[ch] = c;
 
 				const float dL_dchannel = dL_dpixel[ch];
-				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
-				// Update the gradients w.r.t. color of the Gaussian. 
+				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel; // dL_dchannel is the per-channel component of the per-pixel component of dL_dpixels (the input to the backward pass)
+
+				// Update the gradients w.r.t. color of the Gaussian.
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
+				// Multiple threads (i.e. pixels) could try to change the value
+				// of this gradient at the same time since a single gaussian
+				// could touch multiple pixels, the key insight is that these
+				// gradients are per-gaussian.
+				// TODO what is the shape of dL_dcolors? Why is it indexed that way?
+				// TODO why do we add dchannel_dcolor multiplied by dL_dchannel, what does dchannel_dcolor represent?
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			dL_dalpha *= T;
-			// Update last alpha (to be used in the next iteration)
-			last_alpha = alpha;
 
 			// Account for fact that alpha also influences how much of
 			// the background color is added if nothing left to blend
 			float bg_dot_dpixel = 0;
-			for (int i = 0; i < C; i++)
+			for (int i = 0; i < C; i++){
 				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
+			}
 			dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 
+			// Account for the fact that alpha is also used in the per-pixel
+			// entropy calculation
+			if (count > 1) {
+			if (isinf((-T * (log(alpha * T) + 1) + accum_rec_entropy / (1 - alpha)) / log(count_f))){
+				printf("Term to add dL_dalpha is inf, for pix_id %d, with count %d, with alpha*T %e, pixel inside: %s\n", pix_id, count, alpha*T, inside ? "true" : "false");
+			}
+
+			if (isnan((-T * (log(alpha * T) + 1) + accum_rec_entropy / (1 - alpha)) / log(count_f))){
+				printf("Term to add dL_dalpha is nan, for pix_id %d, with count %d, with alpha*T %e, pixel inside: %s\n", pix_id, count, alpha*T, inside ? "true" : "false");
+			}
+
+			if (isinf(alpha * T * (log(alpha * T) + 1))){
+				printf("Term to add accum_rec_entropy is inf, for pix_id %d with count %d, with alpha*T %e, pixel inside: %s\n", pix_id, count, alpha*T, inside ? "true" : "false");
+			}
+
+			if (isnan(alpha * T * (log(alpha * T) + 1))){
+				printf("Term to add accum_rec_entropy is nan, for pix_id %d, with count %d, with alpha*T %e, pixel inside: %s\n", pix_id, count, alpha*T, inside ? "true" : "false");
+			}
+			}
+
+			// added
+			if (count > 1){
+				dL_dalpha += (-T * (log(alpha * T) + 1) + accum_rec_entropy / (1 - alpha)) / log(count_f) * dL_dentropy_pixel;
+				accum_rec_entropy += alpha * T * (log(alpha * T) + 1);  // Used in the next iterations
+
+				// if (pix_id == 2813){
+				// printf("====BACKWARD===\nTerm to add dL_dalpha for entropy for pix_id %d with count %d: %e\n", pix_id, count,  (-T * (log(alpha * T) + 1) + accum_rec_entropy / (1 - alpha)) / log(count_f) * dL_dentropy_pixel);
+				// }
+			}
+
+			// Update last alpha (to be used in the next iteration)
+			last_alpha = alpha;
 
 			// Helpful reusable temporary variables
-			const float dL_dG = con_o.w * dL_dalpha;
+			const float dL_dG = con_o.w * dL_dalpha; // con_o.w is the opacity which is equal to dalpha_dG since alpha=con_o.w * G
 			const float gdx = G * d.x;
 			const float gdy = G * d.y;
 			const float dG_ddelx = -gdx * con_o.x - gdy * con_o.y;
@@ -551,7 +607,7 @@ renderCUDA(
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
 			// Update gradients w.r.t. opacity of the Gaussian
-			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
+			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha); // G is dalpha_dopacity
 		}
 	}
 }
@@ -580,10 +636,10 @@ void BACKWARD::preprocess(
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
 {
-	// Propagate gradients for the path of 2D conic matrix computation. 
-	// Somewhat long, thus it is its own kernel rather than being part of 
+	// Propagate gradients for the path of 2D conic matrix computation.
+	// Somewhat long, thus it is its own kernel rather than being part of
 	// "preprocess". When done, loss gradient w.r.t. 3D means has been
-	// modified and gradient w.r.t. 3D covariance matrix has been computed.	
+	// modified and gradient w.r.t. 3D covariance matrix has been computed.
 	computeCov2DCUDA << <(P + 255) / 256, 256 >> > (
 		P,
 		means3D,
@@ -632,7 +688,9 @@ void BACKWARD::render(
 	const float* colors,
 	const float* final_Ts,
 	const uint32_t* n_contrib,
+	const int* count_pixels,
 	const float* dL_dpixels,
+	const float* dL_dentropy,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
@@ -648,10 +706,16 @@ void BACKWARD::render(
 		colors,
 		final_Ts,
 		n_contrib,
+		count_pixels,
 		dL_dpixels,
+		dL_dentropy,
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dcolors
 		);
+		cudaDeviceSynchronize();
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess){printf("ouch... CUDA errors in BACKWARD: %s\n", cudaGetErrorName(err));}
+		if (err != cudaSuccess){printf("ouch... CUDA errors in BACKWARD: %s\n", cudaGetErrorString(err));}
 }

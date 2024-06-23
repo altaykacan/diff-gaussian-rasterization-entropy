@@ -3,7 +3,7 @@
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use 
+ * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
  * For inquiries contact  george.drettakis@inria.fr
@@ -57,6 +57,7 @@ __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& r
 
 __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float* matrix)
 {
+	// We use column-major matrix storage
 	float3 transformed = {
 		matrix[0] * p.x + matrix[4] * p.y + matrix[8] * p.z + matrix[12],
 		matrix[1] * p.x + matrix[5] * p.y + matrix[9] * p.z + matrix[13],
